@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Jumping Ball Runner</title>
+<style>
+  :root{
+    --bg1: #8fd3f4;
+    --bg2: #84fab0;
+    --accent: #ff7b6b;
+    --accent2: #ffd166;
+    --ui: #ffffff;
+    --muted: 0.85;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg1),var(--bg2));font-family:Inter,system-ui,Segoe UI,Roboto,Arial;}
+  #wrap{height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}
+  canvas{display:block;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);background:linear-gradient(180deg,#bfe9ff 0%, #dfffe0 100%);width:100%;max-width:1100px;height:62vh;max-height:720px}
+  .ui{
+    position:absolute;left:26px;top:26px;color:var(--ui);text-shadow:0 2px 12px rgba(0,0,0,0.18);display:flex;gap:14px;align-items:center;
+  }
+  .chip{background:rgba(255,255,255,0.06);padding:8px 12px;border-radius:999px;font-weight:700}
+  .controls{position:absolute;right:26px;top:26px;display:flex;gap:8px;align-items:center}
+  .btn{background:linear-gradient(90deg,var(--accent),var(--accent2));border:0;padding:8px 12px;color:#111;border-radius:10px;font-weight:800;cursor:pointer}
+  .smallbtn{background:rgba(255,255,255,0.08);border:0;padding:8px 10px;color:var(--ui);border-radius:10px;cursor:pointer;font-weight:700}
+  #overlay{position:fixed;left:0;right:0;top:0;bottom:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,rgba(5,10,20,0.25),rgba(5,10,20,0.45));backdrop-filter: blur(2px);z-index:40}
+  #card{background:linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,255,255,0.94));padding:22px;border-radius:14px;box-shadow:0 12px 30px rgba(0,0,0,0.16);text-align:center;max-width:92%;width:480px}
+  h1{margin:0 0 8px 0;font-size:22px;color:#123}
+  p{margin:6px 0 14px 0;color:#334}
+  .footer{position:fixed;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(255,255,255,0.06);padding:7px 12px;border-radius:999px;color:rgba(0,0,0,0.6);font-weight:700}
+  @media (max-width:600px){ canvas{height:56vh} h1{font-size:18px} .chip{font-size:13px} }
+</style>
+</head>
+<body>
+  <div id="wrap" style="position:relative; width:100%; max-width:1200px">
+    <div class="ui">
+      <div class="chip">Score: <span id="score">0</span></div>
+      <div class="chip" id="highChip">High: <span id="high">0</span></div>
+    </div>
+    <div class="controls">
+      <button class="smallbtn" id="mute">🔊</button>
+      <button class="smallbtn" id="pause">⏸️</button>
+    </div>
+
+    <canvas id="c" width="1100" height="620" role="img" aria-label="Jumping Ball Runner game"></canvas>
+
+    <div id="overlay" aria-hidden="false">
+      <div id="card">
+        <h1>Jumping Ball Runner</h1>
+        <p>Jump over obstacles. Survive as long as you can — speed increases over time. Controls: <strong>Space / Up / Tap</strong>.</p>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button id="start" class="btn">Start game</button>
+          <button id="how" class="smallbtn">How to play</button>
+        </div>
+        <p style="font-size:13px;margin-top:10px;color:#666">Fun sounds, colorful parallax, cartoonish characters — family friendly.</p>
+      </div>
+    </div>
+
+    <div class="footer">Tip: Hold the jump for a slightly higher hop! — Press M to mute, P to pause.</div>
+  </div>
+
+<script>
+(() => {
+  // Canvas + context
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  // sizing (keeps crisp on retina)
+  function fit() {
+    const ratio = window.devicePixelRatio || 1;
+    const maxW = Math.min(window.innerWidth - 40, 1100);
+    const maxH = Math.max(window.innerHeight*0.62, 420);
+    canvas.style.width = Math.round(maxW) + 'px';
+    canvas.style.height = Math.round(maxH) + 'px';
+    canvas.width = Math.round(maxW * ratio);
+    canvas.height = Math.round(maxH * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  // UI refs
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('start');
+  const howBtn = document.getElementById('how');
+  const scoreEl = document.getElementById('score');
+  const highEl = document.getElementById('high');
+  const muteBtn = document.getElementById('mute');
+  const pauseBtn = document.getElementById('pause');
+
+  // Game state
+  let running = false;
+  let paused = false;
+  let lastTime = 0;
+  let dt = 0;
+  let speed = 360;          // px / s base ground speed
+  let distance = 0;        // meters-like metric
+  let spawnTimer = 0;
+  let spawnInterval = 1.2; // seconds
+  let obstacles = [];
+  let score = 0;
+  let highScore = Number(localStorage.getItem('jbr_high') || 0);
+  highEl.textContent = highScore;
+
+  // Player (cartoonish ball character)
+  const player = {
+    x: 120,
+    y: 0,
+    vy: 0,
+    size: 56,
+    grounded: true,
+    color: '#ffde59',
+    bounce: 0,
+  };
+
+  // Background parallax state
+  const layers = [
+    { speed: 0.08, x: 0 },   // distant clouds
+    { speed: 0.32, x: 0 },   // hills
+    { speed: 0.8, x: 0 }     // foreground ground details
+  ];
+
+  // Physics
+  const GRAV = 1400; // px/s^2
+
+  // Audio (simple and funny using WebAudio)
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = AudioCtx ? new AudioCtx() : null;
+  let muted = false;
+  muteBtn.addEventListener('click', () => {
+    muted = !muted;
+    muteBtn.textContent = muted ? '🔇' : '🔊';
+  });
+  function playTone({freq=440, type='sine', dur=0.08, gain=0.08} = {}) {
+    if (!audioCtx || muted) return;
+    try {
+      const t = audioCtx.currentTime;
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.02);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t); o.stop(t + dur + 0.02);
+    } catch (e) { /* audio may be blocked */ }
+  }
+  function sfxJump(){ playTone({freq:520, type:'sine', dur:0.12, gain:0.12}); }
+  function sfxLand(){ playTone({freq:240, type:'triangle', dur:0.06, gain:0.06}); }
+  function sfxHit(){ playTone({freq:120, type:'sawtooth', dur:0.3, gain:0.18}); }
+  function sfxPoint(){ playTone({freq:880, type:'square', dur:0.06, gain:0.08}); }
+  function sfxMilestone(){ playTone({freq:1040, type:'sine', dur:0.14, gain:0.2}); playTone({freq:660, type:'triangle', dur:0.14, gain:0.14}); }
+
+  // Helpers
+  function cssHeight() {
+    return canvas.height / (window.devicePixelRatio || 1);
+  }
+  function groundY() {
+    return cssHeight() * 0.78;
+  }
+
+  // Spawn obstacles
+  function spawnObstacle() {
+    const w = 22 + Math.random()*26;
+    const h = 22 + Math.random()*44;
+    const cssW = canvas.width / (window.devicePixelRatio || 1);
+    obstacles.push({
+      x: cssW + 40,
+      w: w,
+      h: h,
+      type: Math.random() < 0.25 ? 'spike' : 'box',
+      hit: false
+    });
+    // sometimes a small cluster
+    if (Math.random() < 0.12) {
+      obstacles.push({
+        x: cssW + 40 + w + 18,
+        w: 18 + Math.random()*14,
+        h: 18 + Math.random()*28,
+        type: 'box',
+        hit: false
+      });
+    }
+  }
+
+  // Input
+  let pointerDown = false;
+  function doJump() {
+    if (player.grounded) {
+      player.vy = -660;
+      player.grounded = false;
+      sfxJump();
+    } else {
+      // a small mid-air assist if they tap again quickly
+      if (player.vy > -240) { player.vy -= 120; sfxJump(); }
+    }
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); doJump(); }
+    if (e.code === 'KeyP') { pausedToggle(); }
+    if (e.code === 'KeyM') { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊'; }
+    if (e.code === 'KeyR' && !running) startGame();
+  });
+  canvas.addEventListener('pointerdown', (e) => { pointerDown = true; doJump(); });
+  window.addEventListener('pointerup', () => { pointerDown = false; });
+
+  // Start / Pause / Reset
+  startBtn.addEventListener('click', startGame);
+  howBtn.addEventListener('click', () => {
+    alert('Controls:\\n- Space / Up / Tap to jump\\n- Hold for a slightly higher jump\\n- P to pause, M to mute\\nAvoid obstacles & survive as long as possible!');
+  });
+  pauseBtn.addEventListener('click', pausedToggle);
+
+  function pausedToggle() {
+    paused = !paused;
+    pauseBtn.textContent = paused ? '▶️' : '⏸️';
+  }
+
+  function placePlayerOnGround() {
+    const gy = groundY();
+    player.y = gy - player.size/2;
+    player.vy = 0;
+    player.grounded = true;
+  }
+
+  function startGame() {
+    // resume audio on interaction (some browsers require gesture)
+    if (audioCtx && audioCtx.state === 'suspended') try { audioCtx.resume(); } catch(e) {}
+    // init
+    running = true;
+    paused = false;
+    lastTime = 0;
+    speed = 380;
+    distance = 0;
+    spawnTimer = 0;
+    spawnInterval = 1.1;
+    obstacles.length = 0;
+    score = 0;
+    overlay.style.display = 'none';
+    placePlayerOnGround();
+    requestAnimationFrame(loop);
+  }
+
+  function endGame() {
+    running = false;
+    overlay.style.display = 'flex';
+    // build overlay content
+    const card = document.getElementById('card');
+    // small safe update without template literal pitfalls
+    let html = '<h1>Oh no — you crashed! 😵</h1>';
+    html += '<p>Your score: <strong>' + Math.floor(score) + '</strong><br/>Distance: <strong>' + Math.floor(distance) + '</strong> m</p>';
+    html += '<div style=\"display:flex;gap:12px;justify-content:center\">';
+    html += '<button id=\"retry\" class=\"btn\">Retry</button>';
+    html += '<button id=\"shareBtn\" class=\"smallbtn\">Share</button>';
+    html += '</div>';
+    html += '<p style=\"margin-top:10px;font-weight:700\">High score: <strong>' + highScore + '</strong></p>';
+    card.innerHTML = html;
+    const retry = document.getElementById('retry');
+    if (retry) retry.addEventListener('click', () => {
+      // restore the original card content for next time
+      card.innerHTML = '<h1>Jumping Ball Runner</h1><p>Jump over obstacles. Survive as long as you can — speed increases over time.</p><div style=\"display:flex;gap:10px;justify-content:center\"><button id=\"start\" class=\"btn\">Start game</button><button id=\"how\" class=\"smallbtn\">How to play</button></div><p style=\"font-size:13px;margin-top:10px;color:#666\">Fun sounds, colorful parallax, cartoonish characters — family friendly.</p>';
+      // re-hook start/how
+      document.getElementById('start').addEventListener('click', startGame);
+      document.getElementById('how').addEventListener('click', () => alert('Controls:\\n- Space / Up / Tap to jump\\n- Hold to jump a bit higher\\n- P to pause\\n\\nAvoid obstacles and survive as long as possible. Good luck!'));
+    });
+    const shareBtn = document.getElementById('shareBtn');
+    if (shareBtn) shareBtn.addEventListener('click', () => {
+      try {
+        if (navigator.clipboard) navigator.clipboard.writeText('I scored ' + Math.floor(score) + ' in Jumping Ball Runner! Try to beat me :)');
+        alert('Score copied to clipboard!');
+      } catch (e) { alert('Could not copy score.'); }
+    });
+  }
+
+  // Visual drawing helpers (cartoonish)
+  function drawCloud(x,y,scale=1) {
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.scale(scale,scale);
+    ctx.fillStyle = 'rgba(255,255,255,0.94)';
+    ctx.beginPath();
+    ctx.ellipse(0,0,48,20,0,0,Math.PI*2);
+    ctx.ellipse(42,6,34,16,0,0,Math.PI*2);
+    ctx.ellipse(-36,4,30,14,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHills(w,h) {
+    const gy = groundY();
+    // two big hills
+    ctx.save();
+    ctx.translate(layers[1].x % (w+800) - 300, 0);
+    ctx.beginPath();
+    ctx.fillStyle = '#8fe49a';
+    ctx.ellipse(420, gy + 60, 300, 120, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.translate((layers[1].x+420) % (w+700) - 120, 0);
+    ctx.beginPath();
+    ctx.fillStyle = '#bff2c8';
+    ctx.ellipse(120, gy + 80, 220, 86, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawGround(w,h) {
+    const gy = groundY();
+    // main ground strip
+    ctx.fillStyle = '#3db46c';
+    ctx.fillRect(0, gy, w, h - gy);
+    // pattern
+    for (let i=0;i<w;i+=28) {
+      ctx.fillStyle = i%56===0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.02)';
+      ctx.fillRect(i, gy, 14, 6);
+    }
+  }
+
+  function drawPlayer(p) {
+    const cx = p.x;
+    const cy = p.y;
+    const size = p.size;
+    // shadow
+    ctx.beginPath();
+    ctx.ellipse(cx+8, cy + size/2 + 8, size*0.48, size*0.2, 0, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fill();
+    // body
+    ctx.save(); ctx.translate(cx, cy);
+    const scale = 1 + Math.min(0.06, p.bounce*0.05);
+    ctx.scale(scale, scale);
+    const g = ctx.createLinearGradient(-size/2, -size/2, size/2, size/2);
+    g.addColorStop(0,'#fff8b0'); g.addColorStop(0.45,p.color); g.addColorStop(1,'#ffd86b');
+    ctx.beginPath(); ctx.arc(0,0,size/2,0,Math.PI*2); ctx.fillStyle = g; ctx.fill();
+    // cheeks
+    ctx.beginPath(); ctx.fillStyle = 'rgba(255,130,120,0.9)'; ctx.ellipse(-size*0.18, size*0.05, size*0.09, size*0.06, 0,0,Math.PI*2); ctx.ellipse(size*0.18, size*0.05, size*0.09, size*0.06, 0,0,Math.PI*2); ctx.fill();
+    // eyes
+    ctx.fillStyle = '#231f20'; ctx.beginPath(); ctx.ellipse(-size*0.12, -size*0.06, size*0.065, size*0.09, 0,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.ellipse(size*0.12, -size*0.06, size*0.065, size*0.09, 0,0,Math.PI*2); ctx.fill();
+    // smile
+    ctx.beginPath(); ctx.strokeStyle = '#6b2a2a'; ctx.lineWidth = Math.max(2,size*0.06); ctx.lineCap='round'; ctx.moveTo(-size*0.16, size*0.08); ctx.quadraticCurveTo(0, size*0.18, size*0.16, size*0.08); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawObstacle(o,gy) {
+    const oy = gy - o.h;
+    ctx.save();
+    ctx.translate(o.x, oy);
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(6, o.h + 6, o.w, 8);
+    // body
+    if (o.type === 'spike') {
+      ctx.beginPath(); ctx.moveTo(0,o.h); ctx.lineTo(o.w/2,0); ctx.lineTo(o.w,o.h); ctx.closePath(); ctx.fillStyle = '#ff7b6b'; ctx.fill();
+      // eyes
+      ctx.fillStyle = '#fff'; ctx.fillRect(o.w*0.28, o.h*0.35, 6,6); ctx.fillRect(o.w*0.58, o.h*0.35, 6,6);
+    } else {
+      ctx.fillStyle = '#ff9f80'; ctx.fillRect(0,0,o.w,o.h);
+      ctx.fillStyle = '#fff'; ctx.fillRect(o.w*0.18, o.h*0.22, Math.max(6, o.w*0.22), Math.max(6, o.h*0.18)); ctx.fillRect(o.w*0.62, o.h*0.22, Math.max(6, o.w*0.22), Math.max(6, o.h*0.18));
+      ctx.fillStyle = '#6b2a2a'; ctx.fillRect(o.w*0.3, o.h*0.6, o.w*0.4, Math.max(4, o.h*0.08));
+    }
+    ctx.restore();
+  }
+
+  // simple screen shake
+  let shake = 0;
+  function shakeScreen() { shake = 10; }
+
+  // draw entire scene
+  function drawScene() {
+    const w = canvas.width / (window.devicePixelRatio || 1);
+    const h = canvas.height / (window.devicePixelRatio || 1);
+    ctx.clearRect(0,0,w,h);
+
+    // move parallax layers
+    layers.forEach((L,i) => {
+      L.x -= (speed * L.speed) / 60;
+    });
+
+    // clouds
+    drawCloud((layers[0].x % (w+540)) - 120, h*0.12, 1.2);
+    drawCloud(((layers[0].x+420) % (w+540)) - 40, h*0.08, 0.9);
+    drawCloud(((layers[0].x+760) % (w+540)) + 60, h*0.14, 0.85);
+
+    // hills
+    drawHills(w,h);
+
+    // ground
+    drawGround(w,h);
+
+    // obstacles
+    const gy = groundY();
+    for (let i = 0; i < obstacles.length; i++) {
+      drawObstacle(obstacles[i], gy);
+    }
+
+    // player
+    if (player.bounce > 0) player.bounce -= 0.06;
+    drawPlayer(player);
+
+    // HUD drawn via DOM; keep in-canvas minimal
+    // screen shake
+    if (shake > 0) {
+      shake--;
+      const dx = (Math.random()-0.5)*shake;
+      const dy = (Math.random()-0.5)*shake;
+      canvas.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+    } else {
+      canvas.style.transform = '';
+    }
+  }
+
+  // main loop
+  function loop(ts) {
+    if (!lastTime) lastTime = ts;
+    let delta = Math.min(0.05, (ts - lastTime) / 1000);
+    lastTime = ts;
+    if (!running) { requestAnimationFrame(loop); return; }
+    if (paused) { requestAnimationFrame(loop); return; }
+
+    // increase difficulty and spawn
+    speed += delta * 6;
+    distance += speed * delta * 0.02;
+    spawnTimer += delta;
+    if (spawnTimer > spawnInterval) {
+      spawnTimer = 0;
+      spawnInterval = Math.max(0.6, spawnInterval - 0.004);
+      spawnObstacle();
+    }
+
+    // physics
+    player.vy += GRAV * delta;
+    player.y += player.vy * delta;
+
+    // ceiling/clamp (cloud threshold)
+    const cy = cssHeight() * 0.12;
+    const ceiling = Math.max(16, cy - 40);
+    if (player.y - player.size/2 < ceiling) {
+      player.y = ceiling + player.size/2;
+      if (player.vy < 160) player.vy = 160;
+      // tiny whoosh
+      playTone({freq:420, type:'sine', dur:0.04, gain:0.04});
+    }
+
+    // ground collision
+    const gy2 = groundY();
+    if (player.y + player.size/2 >= gy2) {
+      player.y = gy2 - player.size/2;
+      if (!player.grounded) {
+        sfxLand();
+        player.bounce = 1;
+      }
+      player.vy = 0; player.grounded = true;
+    } else {
+      player.grounded = false;
+    }
+
+    // move obstacles
+    const moveX = speed * delta;
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      obstacles[i].x -= moveX;
+      if (obstacles[i].x + obstacles[i].w < -80) obstacles.splice(i,1);
+    }
+
+    // check collisions
+    for (let i = 0; i < obstacles.length; i++) {
+      const o = obstacles[i];
+      const oy = gy2 - o.h;
+      const px = player.x;
+      const py = player.y;
+      const pr = player.size/2 - 6;
+      const testX = Math.max(o.x, Math.min(px, o.x + o.w));
+      const testY = Math.max(oy, Math.min(py + pr, oy + o.h));
+      const dx = px - testX;
+      const dy = (py + pr) - testY;
+      if ((dx*dx + dy*dy) < pr*pr && !o.hit) {
+        o.hit = true;
+        sfxHit();
+        shakeScreen();
+        running = false;
+        if (Math.floor(score) > highScore) { highScore = Math.floor(score); try{ localStorage.setItem('jbr_high', String(highScore)); }catch(e){} }
+        highEl.textContent = highScore;
+        setTimeout(endGame, 350);
+      }
+    }
+
+    // score & milestone
+    score += delta * 10 * (speed/380);
+    if (Math.floor(score) > 0 && Math.floor(score) % 50 === 0 && Math.floor(score) !== Math.floor(score - delta * 10)) {
+      sfxMilestone();
+    }
+    scoreEl.textContent = Math.floor(score);
+
+    // draw
+    drawScene();
+    requestAnimationFrame(loop);
+  }
+
+  // small periodic score bump to keep lively
+  setInterval(() => {
+    if (running && !paused) { score += 0.5; scoreEl.textContent = Math.floor(score); }
+  }, 300);
+
+  // start RAF
+  requestAnimationFrame(loop);
+
+  // initial placement
+  placePlayerOnGround();
+
+  // expose some helpers to console for debugging
+  window.__jbr = {
+    spawnObstacle, startGame, endGame, placePlayerOnGround
+  };
+
+})();
+</script>
+</body>
+</html>
